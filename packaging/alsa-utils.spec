@@ -40,6 +40,7 @@ make %{?_smp_mflags}
 %remove_docs
 
 %files
+%license COPYING
 %{_bindir}/*
 %{_sbindir}/*
 %{_datadir}/alsa/*
