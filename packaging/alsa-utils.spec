@@ -6,6 +6,7 @@ Summary:        Advanced Linux Sound Architecture (ALSA) utilities
 Url:            http://www.alsa-project.org/
 Group:          Applications/Multimedia
 Source0:        ftp://ftp.alsa-project.org/pub/utils/alsa-utils-%{version}.tar.bz2
+Source1001: 	alsa-utils.manifest
 BuildRequires:  libasound-devel
 
 %description
@@ -22,6 +23,7 @@ Man pages for alsa-utils
 
 %prep
 %setup -q
+cp %{SOURCE1001} .
 
 
 %build
@@ -40,6 +42,7 @@ make %{?_smp_mflags}
 %remove_docs
 
 %files
+%manifest %{name}.manifest
 %{_bindir}/*
 %{_sbindir}/*
 %{_datadir}/alsa/*
