@@ -1,14 +1,14 @@
 Name:           alsa-utils
-Version:        1.0.26
-Release:        1
+Version:        1.0.28
+Release:        0
 License:        GPL-2.0+
 Summary:        Advanced Linux Sound Architecture (ALSA) utilities
 Url:            http://www.alsa-project.org/
 Group:          Applications/Multimedia
-Source0:        ftp://ftp.alsa-project.org/pub/utils/alsa-utils-%{version}.tar.bz2
+Source0:        ftp://ftp.alsa-project.org/pub/utils/%{name}-%{version}.tar.bz2
 Source1001:     alsa-utils.manifest
 BuildRequires:  libasound-devel
-BuildRequires:  systemd
+BuildRequires:  systemd-devel
 %systemd_requires
 
 %description
@@ -39,7 +39,7 @@ cp %{SOURCE1001} .
     --with-udev-rules-dir=/lib/udev/rules.d \
     --with-systemdsystemunitdir=%{_unitdir}
 
-make %{?_smp_mflags}
+%__make %{?_smp_mflags}
 
 %install
 %make_install
@@ -66,5 +66,6 @@ mkdir -p %{buildroot}/var/lib/alsa
 /lib/udev/rules.d/90-alsa-restore.rules
 %{_unitdir}/*.service
 %{_unitdir}/basic.target.wants/alsa-restore.service
+%{_unitdir}/basic.target.wants/alsa-state.service
 %{_unitdir}/shutdown.target.wants/alsa-store.service
 %dir /var/lib/alsa
