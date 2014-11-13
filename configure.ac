@@ -1,8 +1,11 @@
 dnl Process this file with autoconf to produce a configure script.
 AC_PREREQ(2.59)
-AC_INIT(aplay/aplay.c)
+AC_INIT(alsa-utils, 1.0.28)
+AC_CONFIG_SRCDIR([aplay/aplay.c])
 AC_PREFIX_DEFAULT(/usr)
-AM_INIT_AUTOMAKE(alsa-utils, 1.0.26)
+AM_INIT_AUTOMAKE
+
+AM_MAINTAINER_MODE([enable])
 
 AM_GNU_GETTEXT([external])
 AM_GNU_GETTEXT_VERSION([0.15])
@@ -30,7 +33,7 @@ AC_PROG_MKDIR_P
 AC_PROG_LN_S
 AC_PROG_SED
 PKG_PROG_PKG_CONFIG
-AM_PATH_ALSA(1.0.24)
+AM_PATH_ALSA(1.0.27)
 if test "x$enable_alsatest" = "xyes"; then
 AC_CHECK_FUNC([snd_ctl_elem_add_enumerated],
 	      , [AC_ERROR([No user enum control support in alsa-lib])])
@@ -118,8 +121,14 @@ AM_CONDITIONAL(USE_XMLTO, test x"$xmlto" = xyes)
 
 AC_ARG_WITH(
         [udev-rules-dir],
-        AS_HELP_STRING([--with-udev-rules-dir],[Directory where to install udev rules to (defaults to /lib/udev/rules.d)]),
-        [udevrulesdir=$withval], [udevrulesdir="/lib/udev/rules.d"])
+        AS_HELP_STRING([--with-udev-rules-dir=DIR],[Directory where to install udev rules to (default=auto)]),
+        [udevrulesdir="$withval"],
+        [udevdir=$($PKG_CONFIG udev --variable=udevdir)
+        if test "x$udevdir" = "x"; then
+            udevrulesdir="/lib/udev/rules.d"
+        else
+            udevrulesdir="$udevdir/rules.d"
+        fi])
 AC_SUBST(udevrulesdir)
 
 dnl Checks for header files.
@@ -283,6 +292,7 @@ AC_DEFINE_UNQUOTED(SOUNDSDIR, "$soundsdir", [directory containing sample data])
 
 mydatadir="$dir/alsa"
 AC_DEFINE_UNQUOTED(DATADIR, "$mydatadir", [directory containing alsa configuration])
+AC_SUBST(mydatadir)
 
 AC_ARG_WITH(testsound,
   AS_HELP_STRING([--with-testsound=file], [give the path of test sound file for alsaconf]),
@@ -290,7 +300,7 @@ AC_ARG_WITH(testsound,
   TESTSOUND="$dir/test.wav")
 AC_SUBST(TESTSOUND)
 
-AM_CONFIG_HEADER(include/aconfig.h)
+AC_CONFIG_HEADERS(include/aconfig.h)
 
 dnl Checks for typedefs, structures, and compiler characteristics.
 AC_C_CONST
@@ -321,6 +331,24 @@ AC_ARG_WITH([asound-state-dir],
         [ASOUND_STATE_DIR="$withval"],
         [ASOUND_STATE_DIR="/var/lib/alsa"])
 AC_SUBST(ASOUND_STATE_DIR)
+
+AC_ARG_WITH([alsactl-lock-dir],
+        AS_HELP_STRING([--with-alsactl-lock-dir=DIR], [Directory to place lock files in]),
+        [ASOUND_LOCK_DIR="$withval"],
+        [ASOUND_LOCK_DIR="/var/lock"])
+AC_SUBST(ASOUND_LOCK_DIR)
+
+AC_ARG_WITH([alsactl-pidfile-dir],
+        AS_HELP_STRING([--with-alsactl-pidfile-dir=DIR], [Directory to place alsactl.pid file in]),
+        [ALSACTL_PIDFILE_DIR="$withval"],
+        [ALSACTL_PIDFILE_DIR="/var/run"])
+AC_SUBST(ALSACTL_PIDFILE_DIR)
+
+AC_ARG_WITH([alsactl-daemonswitch],
+        AS_HELP_STRING([--with-alsactl-daemonswitch=FILE], [File to test for the daemon mode]),
+        [ALSACTL_DAEMONSWITCH="$withval"],
+        [ALSACTL_DAEMONSWITCH="/etc/alsa/state-daemon.conf"])
+AC_SUBST(ALSACTL_DAEMONSWITCH)
 
 AC_OUTPUT(Makefile alsactl/Makefile alsactl/init/Makefile \
 	  alsamixer/Makefile amidi/Makefile amixer/Makefile \

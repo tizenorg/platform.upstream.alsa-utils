@@ -45,6 +45,7 @@
 #include <inttypes.h>
 #include <ctype.h>
 #include <byteswap.h>
+#include <signal.h>
 
 #define ALSA_PCM_NEW_HW_PARAMS_API
 #define ALSA_PCM_NEW_SW_PARAMS_API
@@ -58,6 +59,10 @@
 
 #ifdef ENABLE_NLS
 #include <locale.h>
+#endif
+
+#ifdef SND_CHMAP_API_VERSION
+#define CONFIG_SUPPORT_CHMAP	1
 #endif
 
 enum {
@@ -83,6 +88,8 @@ enum {
 #define BE_INT(v)		(v)
 #endif
 
+#define ARRAY_SIZE(x) (int)(sizeof(x)/sizeof(x[0]))
+
 static char              *device      = "default";       /* playback device */
 static snd_pcm_format_t   format      = SND_PCM_FORMAT_S16; /* sample format */
 static unsigned int       rate        = 48000;	            /* stream rate */
@@ -99,6 +106,15 @@ static snd_pcm_uframes_t  period_size;
 static const char *given_test_wav_file = NULL;
 static char *wav_file_dir = SOUNDSDIR;
 static int debug = 0;
+static int force_frequency = 0;
+static int in_aborting = 0;
+static snd_pcm_t *pcm_handle = NULL;
+
+#ifdef CONFIG_SUPPORT_CHMAP
+static snd_pcm_chmap_t *channel_map;
+static int channel_map_set;
+static unsigned int *ordered_channels;
+#endif
 
 static const char *const channel_name[MAX_CHANNELS] = {
   /*  0 */ N_("Front Left"),
@@ -143,6 +159,125 @@ static const int	channels8[] = {
   6, /* Side Left   */
   5, /* LFE         */
 };
+
+#ifdef CONFIG_SUPPORT_CHMAP
+/* circular clockwise and bottom-to-top order */
+static const int channel_order[] = {
+  [SND_CHMAP_FLW]  =  10,
+  [SND_CHMAP_FL]   =  20,
+  [SND_CHMAP_TFL]  =  30,
+  [SND_CHMAP_FLC]  =  40,
+  [SND_CHMAP_TFLC] =  50,
+  [SND_CHMAP_FC]   =  60,
+  [SND_CHMAP_TFC]  =  70,
+  [SND_CHMAP_FRC]  =  80,
+  [SND_CHMAP_TFRC] =  90,
+  [SND_CHMAP_FR]   = 100,
+  [SND_CHMAP_TFR]  = 110,
+  [SND_CHMAP_FRW]  = 120,
+  [SND_CHMAP_SR]   = 130,
+  [SND_CHMAP_TSR]  = 140,
+  [SND_CHMAP_RR]   = 150,
+  [SND_CHMAP_TRR]  = 160,
+  [SND_CHMAP_RRC]  = 170,
+  [SND_CHMAP_RC]   = 180,
+  [SND_CHMAP_TRC]  = 190,
+  [SND_CHMAP_RLC]  = 200,
+  [SND_CHMAP_RL]   = 210,
+  [SND_CHMAP_TRL]  = 220,
+  [SND_CHMAP_SL]   = 230,
+  [SND_CHMAP_TSL]  = 240,
+  [SND_CHMAP_BC]   = 250,
+  [SND_CHMAP_TC]   = 260,
+  [SND_CHMAP_LLFE] = 270,
+  [SND_CHMAP_LFE]  = 280,
+  [SND_CHMAP_RLFE] = 290,
+  /* not in table  = 10000 */
+  [SND_CHMAP_UNKNOWN] = 20000,
+  [SND_CHMAP_NA]      = 30000,
+};
+
+static int chpos_cmp(const void *chnum1p, const void *chnum2p)
+{
+  int chnum1 = *(int *)chnum1p;
+  int chnum2 = *(int *)chnum2p;
+  int chpos1 = channel_map->pos[chnum1];
+  int chpos2 = channel_map->pos[chnum2];
+  int weight1 = 10000;
+  int weight2 = 10000;
+
+  if (chpos1 < ARRAY_SIZE(channel_order) && channel_order[chpos1])
+    weight1 = channel_order[chpos1];
+  if (chpos2 < ARRAY_SIZE(channel_order) && channel_order[chpos2])
+    weight2 = channel_order[chpos2];
+
+  if (weight1 == weight2) {
+    /* order by channel number if both have the same position (e.g. UNKNOWN)
+     * or if neither is in channel_order[] */
+    return chnum1 - chnum2;
+  }
+
+  /* order according to channel_order[] */
+  return weight1 - weight2;
+}
+
+static int *order_channels(void)
+{
+  /* create a (playback order => channel number) table with channels ordered
+   * according to channel_order[] values */
+  int i;
+  int *ordered_chs;
+
+  ordered_chs = calloc(channel_map->channels, sizeof(*ordered_chs));
+  if (!ordered_chs)
+    return NULL;
+
+  for (i = 0; i < channel_map->channels; i++)
+    ordered_chs[i] = i;
+
+  qsort(ordered_chs, channel_map->channels, sizeof(*ordered_chs), chpos_cmp);
+
+  return ordered_chs;
+}
+#endif
+
+static int get_speaker_channel(int chn)
+{
+#ifdef CONFIG_SUPPORT_CHMAP
+  if (channel_map_set || (ordered_channels && chn >= channel_map->channels))
+    return chn;
+  if (ordered_channels)
+    return ordered_channels[chn];
+#endif
+
+  switch (channels) {
+  case 4:
+    chn = channels4[chn];
+    break;
+  case 6:
+    chn = channels6[chn];
+    break;
+  case 8:
+    chn = channels8[chn];
+    break;
+  }
+
+  return chn;
+}
+
+static const char *get_channel_name(int chn)
+{
+#ifdef CONFIG_SUPPORT_CHMAP
+  if (channel_map) {
+    const char *name = NULL;
+    if (chn < channel_map->channels)
+      name = snd_pcm_chmap_long_name(channel_map->pos[chn]);
+    return name ? name : "Unknown";
+  }
+#endif
+  return gettext(channel_name[chn]);
+}
+
 static const int	supported_formats[] = {
   SND_PCM_FORMAT_S8,
   SND_PCM_FORMAT_S16_LE,
@@ -519,6 +654,36 @@ static int set_swparams(snd_pcm_t *handle, snd_pcm_sw_params_t *swparams) {
   return 0;
 }
 
+#ifdef CONFIG_SUPPORT_CHMAP
+static int config_chmap(snd_pcm_t *handle, const char *mapstr)
+{
+  int err;
+
+  if (mapstr) {
+    channel_map = snd_pcm_chmap_parse_string(mapstr);
+    if (!channel_map) {
+      fprintf(stderr, _("Unable to parse channel map string: %s\n"), mapstr);
+      return -EINVAL;
+    }
+    err = snd_pcm_set_chmap(handle, channel_map);
+    if (err < 0) {
+      fprintf(stderr, _("Unable to set channel map: %s\n"), mapstr);
+      return err;
+    }
+    channel_map_set = 1;
+    return 0;
+  }
+
+  channel_map = snd_pcm_get_chmap(handle);
+
+  /* create a channel order table for default layouts */
+  if (channel_map)
+    ordered_channels = order_channels();
+
+  return 0;
+}
+#endif
+
 /*
  *   Underrun and suspend recovery
  */
@@ -675,14 +840,25 @@ static int setup_wav_file(int chn)
 
   if (given_test_wav_file)
     return check_wav_file(chn, given_test_wav_file);
-  else
-    return check_wav_file(chn, wavs[chn]);
+
+#ifdef CONFIG_SUPPORT_CHMAP
+  if (channel_map_set && chn < channel_map->channels) {
+    int channel = channel_map->pos[chn] - SND_CHMAP_FL;
+    if (channel >= 0 && channel < MAX_CHANNELS)
+      return check_wav_file(chn, wavs[channel]);
+  }
+#endif
+
+  return check_wav_file(chn, wavs[chn]);
 }
 
 static int read_wav(uint16_t *buf, int channel, int offset, int bufsize)
 {
   static FILE *wavfp = NULL;
   int size;
+
+  if (in_aborting)
+    return -EFAULT;
 
   if (! wav_file[channel]) {
     fprintf(stderr, _("Undefined channel %d\n"), channel);
@@ -728,7 +904,7 @@ static int write_buffer(snd_pcm_t *handle, uint8_t *ptr, int cptr)
 {
   int err;
 
-  while (cptr > 0) {
+  while (cptr > 0 && !in_aborting) {
 
     err = snd_pcm_writei(handle, ptr, cptr);
 
@@ -737,9 +913,9 @@ static int write_buffer(snd_pcm_t *handle, uint8_t *ptr, int cptr)
 
     if (err < 0) {
       fprintf(stderr, _("Write error: %d,%s\n"), err, snd_strerror(err));
-      if (xrun_recovery(handle, err) < 0) {
+      if ((err = xrun_recovery(handle, err)) < 0) {
 	fprintf(stderr, _("xrun_recovery failed: %d,%s\n"), err, snd_strerror(err));
-	return -1;
+	return err;
       }
       break;	/* skip one period */
     }
@@ -760,13 +936,13 @@ static int write_loop(snd_pcm_t *handle, int channel, int periods, uint8_t *fram
   if (test_type == TEST_WAV) {
     int bufsize = snd_pcm_frames_to_bytes(handle, period_size);
     n = 0;
-    while ((err = read_wav((uint16_t *)frames, channel, n, bufsize)) > 0) {
+    while ((err = read_wav((uint16_t *)frames, channel, n, bufsize)) > 0 && !in_aborting) {
       n += err;
       if ((err = write_buffer(handle, frames,
 			      snd_pcm_bytes_to_frames(handle, err * channels))) < 0)
 	break;
     }
-    if (buffer_size > n) {
+    if (buffer_size > n && !in_aborting) {
       snd_pcm_drain(handle);
       snd_pcm_prepare(handle);
     }
@@ -777,7 +953,7 @@ static int write_loop(snd_pcm_t *handle, int channel, int periods, uint8_t *fram
   if (periods <= 0)
     periods = 1;
 
-  for(n = 0; n < periods; n++) {
+  for(n = 0; n < periods && !in_aborting; n++) {
     if (test_type == TEST_PINK_NOISE)
       generate_pink_noise(frames, channel, period_size);
     else if (test_type == TEST_PATTERN)
@@ -788,11 +964,35 @@ static int write_loop(snd_pcm_t *handle, int channel, int periods, uint8_t *fram
     if ((err = write_buffer(handle, frames, period_size)) < 0)
       return err;
   }
-  if (buffer_size > n * period_size) {
+  if (buffer_size > n * period_size && !in_aborting) {
     snd_pcm_drain(handle);
     snd_pcm_prepare(handle);
   }
   return 0;
+}
+
+static int prg_exit(int code)
+{
+  if (pcm_handle)
+    snd_pcm_close(pcm_handle);
+  exit(code);
+  return code;
+}
+
+static void signal_handler(int sig)
+{
+  if (in_aborting)
+    return;
+
+  in_aborting = 1;
+
+  if (pcm_handle)
+    snd_pcm_abort(pcm_handle);
+  if (sig == SIGABRT) {
+    pcm_handle = NULL;
+    prg_exit(EXIT_FAILURE);
+  }
+  signal(sig, signal_handler);
 }
 
 static void help(void)
@@ -815,6 +1015,8 @@ static void help(void)
 	   "-s,--speaker	single speaker test. Values 1=Left, 2=right, etc\n"
 	   "-w,--wavfile	Use the given WAV file as a test sound\n"
 	   "-W,--wavdir	Specify the directory containing WAV files\n"
+	   "-m,--chmap	Specify the channel map to override\n"
+	   "-X,--force-frequency	force frequencies outside the 30-8000hz range\n"
 	   "\n"));
   printf(_("Recognized sample formats are:"));
   for (fmt = supported_formats; *fmt >= 0; fmt++) {
@@ -837,6 +1039,9 @@ int main(int argc, char *argv[]) {
   double		time1,time2,time3;
   unsigned int		n, nloops;
   struct   timeval	tv1,tv2;
+#ifdef CONFIG_SUPPORT_CHMAP
+  const char *chmap = NULL;
+#endif
 
   static const struct option long_option[] = {
     {"help",      0, NULL, 'h'},
@@ -854,6 +1059,10 @@ int main(int argc, char *argv[]) {
     {"wavfile",   1, NULL, 'w'},
     {"wavdir",    1, NULL, 'W'},
     {"debug",	  0, NULL, 'd'},
+    {"force-frequency",	  0, NULL, 'X'},
+#ifdef CONFIG_SUPPORT_CHMAP
+    {"chmap",	  1, NULL, 'm'},
+#endif
     {NULL,        0, NULL, 0  },
   };
 
@@ -872,7 +1081,11 @@ int main(int argc, char *argv[]) {
   while (1) {
     int c;
     
-    if ((c = getopt_long(argc, argv, "hD:r:c:f:F:b:p:P:t:l:s:w:W:d", long_option, NULL)) < 0)
+    if ((c = getopt_long(argc, argv, "hD:r:c:f:F:b:p:P:t:l:s:w:W:d:X"
+#ifdef CONFIG_SUPPORT_CHMAP
+			 "m:"
+#endif
+			 , long_option, NULL)) < 0)
       break;
     
     switch (c) {
@@ -895,7 +1108,7 @@ int main(int argc, char *argv[]) {
     case 'r':
       rate = atoi(optarg);
       rate = rate < 4000 ? 4000 : rate;
-      rate = rate > 196000 ? 196000 : rate;
+      rate = rate > 384000 ? 384000 : rate;
       break;
     case 'c':
       channels = atoi(optarg);
@@ -904,8 +1117,6 @@ int main(int argc, char *argv[]) {
       break;
     case 'f':
       freq = atof(optarg);
-      freq = freq < 30.0 ? 30.0 : freq;
-      freq = freq > 5000.0 ? 5000.0 : freq;
       break;
     case 'b':
       buffer_time = atoi(optarg);
@@ -963,6 +1174,14 @@ int main(int argc, char *argv[]) {
     case 'd':
       debug = 1;
       break;
+    case 'X':
+      force_frequency = 1;
+      break;
+#ifdef CONFIG_SUPPORT_CHMAP
+    case 'm':
+      chmap = optarg;
+      break;
+#endif
     default:
       fprintf(stderr, _("Unknown option '%c'\n"), c);
       exit(EXIT_FAILURE);
@@ -973,6 +1192,13 @@ int main(int argc, char *argv[]) {
   if (morehelp) {
     help();
     exit(EXIT_SUCCESS);
+  }
+
+  if (!force_frequency) {
+    freq = freq < 30.0 ? 30.0 : freq;
+    freq = freq > 8000.0 ? 8000.0 : freq;
+  } else {
+    freq = freq < 1.0 ? 1.0 : freq;
   }
 
   if (test_type == TEST_WAV)
@@ -993,21 +1219,31 @@ int main(int argc, char *argv[]) {
 
   }
 
+  signal(SIGINT, signal_handler);
+  signal(SIGTERM, signal_handler);
+  signal(SIGABRT, signal_handler);
+
   if ((err = snd_pcm_open(&handle, device, SND_PCM_STREAM_PLAYBACK, 0)) < 0) {
     printf(_("Playback open error: %d,%s\n"), err,snd_strerror(err));
-    exit(EXIT_FAILURE);
+    prg_exit(EXIT_FAILURE);
   }
+  pcm_handle = handle;
 
   if ((err = set_hwparams(handle, hwparams, SND_PCM_ACCESS_RW_INTERLEAVED)) < 0) {
     printf(_("Setting of hwparams failed: %s\n"), snd_strerror(err));
-    snd_pcm_close(handle);
-    exit(EXIT_FAILURE);
+    prg_exit(EXIT_FAILURE);
   }
   if ((err = set_swparams(handle, swparams)) < 0) {
     printf(_("Setting of swparams failed: %s\n"), snd_strerror(err));
-    snd_pcm_close(handle);
-    exit(EXIT_FAILURE);
+    prg_exit(EXIT_FAILURE);
   }
+
+#ifdef CONFIG_SUPPORT_CHMAP
+  err = config_chmap(handle, chmap);
+  if (err < 0)
+    prg_exit(EXIT_FAILURE);
+#endif
+
   if (debug) {
     snd_output_t *log;
     err = snd_output_stdio_attach(&log, stderr, 0);
@@ -1023,40 +1259,30 @@ int main(int argc, char *argv[]) {
   
   if (frames == NULL) {
     fprintf(stderr, _("No enough memory\n"));
-    exit(EXIT_FAILURE);
+    prg_exit(EXIT_FAILURE);
   }
+
   if (speaker==0) {
 
     if (test_type == TEST_WAV) {
       for (chn = 0; chn < channels; chn++) {
-	if (setup_wav_file(chn) < 0)
-	  exit(EXIT_FAILURE);
+	if (setup_wav_file(get_speaker_channel(chn)) < 0)
+	  prg_exit(EXIT_FAILURE);
       }
     }
 
-    for (n = 0; ! nloops || n < nloops; n++) {
+    for (n = 0; (! nloops || n < nloops) && !in_aborting; n++) {
 
       gettimeofday(&tv1, NULL);
       for(chn = 0; chn < channels; chn++) {
-	int channel=chn;
-	if (channels == 4) {
-	    channel=channels4[chn];
-	}
-	if (channels == 6) {
-	    channel=channels6[chn];
-	}
-	if (channels == 8) {
-	    channel=channels8[chn];
-	}
-        printf(" %d - %s\n", channel, gettext(channel_name[channel]));
+	int channel = get_speaker_channel(chn);
+        printf(" %d - %s\n", channel, get_channel_name(channel));
 
         err = write_loop(handle, channel, ((rate*3)/period_size), frames);
 
         if (err < 0) {
           fprintf(stderr, _("Transfer failed: %s\n"), snd_strerror(err));
-          free(frames);
-          snd_pcm_close(handle);
-          exit(EXIT_SUCCESS);
+          prg_exit(EXIT_SUCCESS);
         }
       }
       gettimeofday(&tv2, NULL);
@@ -1066,13 +1292,15 @@ int main(int argc, char *argv[]) {
       printf(_("Time per period = %lf\n"), time3 );
     }
   } else {
+    chn = get_speaker_channel(speaker - 1);
+
     if (test_type == TEST_WAV) {
-      if (setup_wav_file(speaker - 1) < 0)
-	exit(EXIT_FAILURE);
+      if (setup_wav_file(chn) < 0)
+	prg_exit(EXIT_FAILURE);
     }
 
-    printf("  - %s\n", gettext(channel_name[speaker-1]));
-    err = write_loop(handle, speaker-1, ((rate*5)/period_size), frames);
+    printf("  - %s\n", get_channel_name(chn));
+    err = write_loop(handle, chn, ((rate*5)/period_size), frames);
 
     if (err < 0) {
       fprintf(stderr, _("Transfer failed: %s\n"), snd_strerror(err));
@@ -1081,7 +1309,9 @@ int main(int argc, char *argv[]) {
 
 
   free(frames);
-  snd_pcm_close(handle);
+#ifdef CONFIG_SUPPORT_CHMAP
+  free(ordered_channels);
+#endif
 
-  exit(EXIT_SUCCESS);
+  return prg_exit(EXIT_SUCCESS);
 }

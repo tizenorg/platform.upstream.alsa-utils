@@ -31,9 +31,6 @@
 #include "alsactl.h"
 
 
-#define ARRAY_SIZE(a) (sizeof (a) / sizeof (a)[0])
-
-
 static char *id_str(snd_ctl_elem_id_t *id)
 {
 	static char str[128];
@@ -185,11 +182,11 @@ static int add_tlv_comments(snd_ctl_t *handle, snd_ctl_elem_id_t *id,
 		char *s = tlv_to_str(tlv);
 		if (s) {
 			err = snd_config_string_add(comment, "tlv", s);
+			free(s);
 			if (err < 0) {
 				error("snd_config_string_add: %s", snd_strerror(err));
 				return err;
 			}
-			free(s);
 		}
 	}
 
@@ -1546,6 +1543,7 @@ int save_state(const char *file, const char *cardname)
 	snd_input_t *in;
 	snd_output_t *out;
 	int stdio;
+	char *nfile = NULL;
 
 	err = snd_config_top(&config);
 	if (err < 0) {
@@ -1553,13 +1551,24 @@ int save_state(const char *file, const char *cardname)
 		return err;
 	}
 	stdio = !strcmp(file, "-");
+	if (!stdio) {
+		nfile = malloc(strlen(file) + 5);
+		if (nfile == NULL) {
+			error("No enough memory...");
+			goto out;
+		}
+		strcpy(nfile, file);
+		strcat(nfile, ".new");
+		if (state_lock(file, 1, 10) != 0)
+			goto out;
+	}
 	if (!stdio && (err = snd_input_stdio_open(&in, file, "r")) >= 0) {
 		err = snd_config_load(config, in);
 		snd_input_close(in);
 #if 0
 		if (err < 0) {
 			error("snd_config_load error: %s", snd_strerror(err));
-			return err;
+			goto out;
 		}
 #endif
 	}
@@ -1575,17 +1584,19 @@ int save_state(const char *file, const char *cardname)
 			if (card < 0) {
 				if (first) {
 					if (ignore_nocards) {
-						return 0;
+						err = 0;
+						goto out;
 					} else {
 						error("No soundcards found...");
-						return -ENODEV;
+						err = -ENODEV;
+						goto out;
 					}
 				}
 				break;
 			}
 			first = 0;
 			if ((err = get_controls(card, config)))
-				return err;
+				goto out;
 		}
 	} else {
 		int cardno;
@@ -1593,26 +1604,40 @@ int save_state(const char *file, const char *cardname)
 		cardno = snd_card_get_index(cardname);
 		if (cardno < 0) {
 			error("Cannot find soundcard '%s'...", cardname);
-			return cardno;
+			err = cardno;
+			goto out;
 		}
 		if ((err = get_controls(cardno, config))) {
-			return err;
+			goto out;
 		}
 	}
 	
-	if (stdio)
+	if (stdio) {
 		err = snd_output_stdio_attach(&out, stdout, 0);
-	else
-		err = snd_output_stdio_open(&out, file, "w");
+	} else {
+		err = snd_output_stdio_open(&out, nfile, "w");
+	}
 	if (err < 0) {
 		error("Cannot open %s for writing: %s", file, snd_strerror(err));
-		return -errno;
+		err = -errno;
+		goto out;
 	}
 	err = snd_config_save(config, out);
 	snd_output_close(out);
-	if (err < 0)
+	if (err < 0) {
 		error("snd_config_save: %s", snd_strerror(err));
-	return 0;
+	} else {
+		err = rename(nfile, file);
+		if (err < 0)
+			error("rename failed: %s (%s)", strerror(-err), file);
+	}
+out:
+	if (!stdio)
+		state_lock(file, 0, 10);
+	free(nfile);
+	snd_config_delete(config);
+	snd_config_update_free_global();
+	return err;
 }
 
 int load_state(const char *file, const char *initfile, const char *cardname,
@@ -1621,7 +1646,7 @@ int load_state(const char *file, const char *initfile, const char *cardname,
 	int err, finalerr = 0;
 	snd_config_t *config;
 	snd_input_t *in;
-	int stdio;
+	int stdio, locked = 0;
 
 	err = snd_config_top(&config);
 	if (err < 0) {
@@ -1629,16 +1654,21 @@ int load_state(const char *file, const char *initfile, const char *cardname,
 		return err;
 	}
 	stdio = !strcmp(file, "-");
-	if (stdio)
+	if (stdio) {
 		err = snd_input_stdio_attach(&in, stdin, 0);
-	else
-		err = snd_input_stdio_open(&in, file, "r");
+	} else {
+		err = state_lock(file, 1, 10);
+		locked = err >= 0;
+		err = err >= 0 ? snd_input_stdio_open(&in, file, "r") : err;
+	}
 	if (err >= 0) {
 		err = snd_config_load(config, in);
 		snd_input_close(in);
+		if (locked)
+			state_lock(file, 0, 10);
 		if (err < 0) {
 			error("snd_config_load error: %s", snd_strerror(err));
-			return err;
+			goto out;
 		}
 	} else {
 		int card, first = 1;
@@ -1650,7 +1680,8 @@ int load_state(const char *file, const char *initfile, const char *cardname,
 			card = snd_card_get_index(cardname);
 			if (card < 0) {
 				error("Cannot find soundcard '%s'...", cardname);
-				return -ENODEV;
+				err = -ENODEV;
+				goto out;
 			}
 			goto single;
 		} else {
@@ -1676,7 +1707,8 @@ single:
 		}
 		if (first)
 			finalerr = 0;	/* no cards, no error code */
-		return finalerr;
+		err = finalerr;
+		goto out;
 	}
 
 	if (!cardname) {
@@ -1691,10 +1723,12 @@ single:
 			if (card < 0) {
 				if (first) {
 					if (ignore_nocards) {
-						return 0;
+						err = 0;
+						goto out;
 					} else {
 						error("No soundcards found...");
-						return -ENODEV;
+						err = -ENODEV;
+						goto out;
 					}
 				}
 				break;
@@ -1721,7 +1755,8 @@ single:
 		cardno = snd_card_get_index(cardname);
 		if (cardno < 0) {
 			error("Cannot find soundcard '%s'...", cardname);
-			return -ENODEV;
+			err = -ENODEV;
+			goto out;
 		}
 		/* do a check if controls matches state file */
 		if (do_init && set_controls(cardno, config, 0)) {
@@ -1734,8 +1769,12 @@ single:
 		if ((err = set_controls(cardno, config, 1))) {
 			initfailed(cardno, "restore", err);
 			if (!force_restore)
-				return err;
+				goto out;
 		}
 	}
-	return finalerr;
+	err = finalerr;
+out:
+	snd_config_delete(config);
+	snd_config_update_free_global();
+	return err;
 }

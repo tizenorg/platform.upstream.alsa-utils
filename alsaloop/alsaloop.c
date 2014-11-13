@@ -31,7 +31,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <syslog.h>
-#include <sys/signal.h>
+#include <signal.h>
 #include "alsaloop.h"
 
 struct loopback_thread {
@@ -195,6 +195,7 @@ void help(void)
 "-w,--workaround use workaround (serialopen)\n"
 "-U,--xrun      xrun profiling\n"
 "-W,--wake      process wake timeout in ms\n"
+"-z,--syslog    use syslog for errors\n"
 );
 	printf("\nRecognized sample formats are:");
 	for (k = 0; k < SND_PCM_FORMAT_LAST; ++k) {
@@ -334,6 +335,14 @@ static int add_oss_mixers(struct loopback *loop,
 	return 0;
 }
 
+static void enable_syslog(void)
+{
+	if (!use_syslog) {
+		use_syslog = 1;
+		openlog("alsaloop", LOG_NDELAY|LOG_PID, LOG_DAEMON);
+	}
+}
+
 static int parse_config_file(const char *file, snd_output_t *output);
 
 static int parse_config(int argc, char *argv[], snd_output_t *output,
@@ -368,6 +377,7 @@ static int parse_config(int argc, char *argv[], snd_output_t *output,
 		{"ossmixer", 1, NULL, 'O'},
 		{"workaround", 1, NULL, 'w'},
 		{"xrun", 0, NULL, 'U'},
+		{"syslog", 0, NULL, 'z'},
 		{NULL, 0, NULL, 0},
 	};
 	int err, morehelp;
@@ -387,7 +397,9 @@ static int parse_config(int argc, char *argv[], snd_output_t *output,
 	int arg_nblock = 0;
 	int arg_effect = 0;
 	int arg_resample = 0;
+#ifdef USE_SAMPLERATE
 	int arg_samplerate = SRC_SINC_FASTEST + 1;
+#endif
 	int arg_sync = SYNC_TYPE_AUTO;
 	int arg_slave = SLAVE_TYPE_AUTO;
 	int arg_thread = 0;
@@ -403,7 +415,7 @@ static int parse_config(int argc, char *argv[], snd_output_t *output,
 	while (1) {
 		int c;
 		if ((c = getopt_long(argc, argv,
-				"hdg:P:C:X:Y:l:t:F:f:c:r:s:benvA:S:a:m:T:O:w:UW:",
+				"hdg:P:C:X:Y:l:t:F:f:c:r:s:benvA:S:a:m:T:O:w:UW:z",
 				long_option, NULL)) < 0)
 			break;
 		switch (c) {
@@ -415,8 +427,7 @@ static int parse_config(int argc, char *argv[], snd_output_t *output,
 			break;
 		case 'd':
 			daemonize = 1;
-			use_syslog = 1;
-			openlog("alsaloop", LOG_NDELAY|LOG_PID, LOG_DAEMON);
+			enable_syslog();
 			break;
 		case 'P':
 			arg_pdevice = strdup(optarg);
@@ -474,6 +485,7 @@ static int parse_config(int argc, char *argv[], snd_output_t *output,
 		case 'n':
 			arg_resample = 1;
 			break;
+#ifdef USE_SAMPLERATE
 		case 'A':
 			if (strcasecmp(optarg, "sincbest") == 0)
 				arg_samplerate = SRC_SINC_BEST_QUALITY;
@@ -491,6 +503,7 @@ static int parse_config(int argc, char *argv[], snd_output_t *output,
 				arg_sync = SRC_SINC_FASTEST;
 			arg_samplerate += 1;
 			break;
+#endif
 		case 'S':
 			if (strcasecmp(optarg, "samplerate") == 0)
 				arg_sync = SYNC_TYPE_SAMPLERATE;
@@ -557,6 +570,9 @@ static int parse_config(int argc, char *argv[], snd_output_t *output,
 			if (cmdline)
 				arg_default_wake = arg_wake;
 			break;
+		case 'z':
+			enable_syslog();
+			break;
 		}
 	}
 
@@ -610,11 +626,6 @@ static int parse_config(int argc, char *argv[], snd_output_t *output,
 		loop->src_enable = arg_samplerate > 0;
 		if (loop->src_enable)
 			loop->src_converter_type = arg_samplerate - 1;
-#else
-		if (arg_samplerate > 0) {
-			logit(LOG_CRIT, "No libsamplerate support.\n");
-			exit(EXIT_FAILURE);
-		}
 #endif
 		set_loop_time(loop, arg_loop_time);
 		add_loop(loop);
