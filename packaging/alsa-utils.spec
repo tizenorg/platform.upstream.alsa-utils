@@ -8,7 +8,7 @@ Group:          Applications/Multimedia
 Source0:        ftp://ftp.alsa-project.org/pub/utils/alsa-utils-%{version}.tar.bz2
 Source1001:     alsa-utils.manifest
 BuildRequires:  libasound-devel
-BuildRequires:  systemd
+BuildRequires:  systemd-devel
 %systemd_requires
 
 %description
