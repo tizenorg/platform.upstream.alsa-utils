@@ -1,6 +1,6 @@
 Name:           alsa-utils
 Version:        1.0.28
-Release:        0
+Release:        1
 License:        GPL-2.0+
 Summary:        Advanced Linux Sound Architecture (ALSA) utilities
 Url:            http://www.alsa-project.org/
@@ -29,6 +29,7 @@ cp %{SOURCE1001} .
 
 
 %build
+export CFLAGS+=" -fPIC -pie"
 
 %configure \
     --disable-static \
