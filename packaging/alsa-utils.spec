@@ -1,6 +1,6 @@
 Name:           alsa-utils
 Version:        1.0.28
-Release:        1
+Release:        2
 License:        GPL-2.0+
 Summary:        Advanced Linux Sound Architecture (ALSA) utilities
 Url:            http://www.alsa-project.org/
@@ -62,6 +62,7 @@ mkdir -p %{buildroot}/var/lib/alsa
 %manifest %{name}.manifest
 %{_bindir}/*
 %{_sbindir}/*
+%exclude %{_sbindir}/alsaconf
 %{_datadir}/alsa/*
 %{_datadir}/sounds/*
 /lib/udev/rules.d/90-alsa-restore.rules
