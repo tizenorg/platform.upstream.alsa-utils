@@ -13,5 +13,6 @@ Conflicts=shutdown.target
 
 [Service]
 Type=simple
+SmackProcessLabel=System
 ExecStart=-@sbindir@/alsactl -s -n 19 -c rdaemon
 ExecStop=-@sbindir@/alsactl -s kill save_and_quit

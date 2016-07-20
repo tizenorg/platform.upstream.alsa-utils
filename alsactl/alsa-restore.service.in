@@ -13,5 +13,6 @@ Conflicts=shutdown.target
 
 [Service]
 Type=oneshot
+SmackProcessLabel=System
 ExecStart=-@sbindir@/alsactl restore
 StandardOutput=syslog
